@@ -805,11 +805,20 @@ function calibInputs(){
     avgBurnRec=Math.round(mean(inDays.map(r=>r.ex+r.xt)));
   }
   const avgIntake=inDays.length?mean(inDays.map(r=>r.in)):null;
-  const fit=db.weights.length>=2?CalCore.weightSlope(db.weights,days[0],days[days.length-1]):null;
-  return{days:days,start:days[0],end:days[days.length-1],inDays:inDays,ready:ready,
+  /* 对比窗口取「有饮食记录」的首末日：没记录的天既没有摄入数据，也不该计入
+     实测体重变化，否则漏记会虚假放大账实差 */
+  let spanStart=days[0],spanEnd=days[days.length-1],spanDays=days.length;
+  if(inDays.length){
+    spanStart=inDays[0].d;spanEnd=inDays[inDays.length-1].d;
+    spanDays=Math.round((parseDS(spanEnd)-parseDS(spanStart))/86400000)+1;
+  }
+  const spanHasWeights=db.weights.some(w=>w.date>=spanStart&&w.date<=spanEnd);
+  const fit=spanHasWeights?CalCore.weightSlope(db.weights,spanStart,spanEnd):null;
+  return{days:days,start:days[0],end:days[days.length-1],spanStart:spanStart,spanEnd:spanEnd,spanDays:spanDays,
+    inDays:inDays,ready:ready,
     avgBurnRec:avgBurnRec,avgIntake:avgIntake,fit:fit,
     predKg:(ready&&inDays.length)?-(sumDef/KCAL_PER_KG):null,
-    actualKg:fit?fit.slope*days.length:null};
+    actualKg:fit?fit.slope*spanDays:null};
 }
 function fmtKg(v){return (v>0?'+':'')+Math.round(v*10)/10;}
 function ledgerBadge(l){
@@ -818,13 +827,14 @@ function ledgerBadge(l){
 }
 function renderCalibration(){
   const c=calibInputs();
-  const spanTxt=c.start+' 至 '+c.end+'（'+c.days.length+' 天）';
+  const spanTxt='统计窗口 '+fmtMD(c.spanStart)+'–'+fmtMD(c.spanEnd)+'（'+c.spanDays+' 天，有饮食记录的区间）';
   /* —— 真实消耗反推 —— */
   $('#calibSub').textContent=spanTxt;
   const cr=$('#calibRealBody');
   if(!c.ready){cr.innerHTML='<div class="empty">完善身体资料后可用</div>';}
   else if(!c.avgIntake||c.inDays.length<5){cr.innerHTML='<div class="empty">需要本时间段 ≥5 天的饮食记录（现有 '+c.inDays.length+' 天）。记录越完整，反推越准。</div>';}
-  else if(!c.fit){cr.innerHTML='<div class="empty">需要本时间段 ≥2 次体重记录。建议每天早晨空腹、如厕后称重，波动最小。</div>';}
+  else if(c.spanDays<7){cr.innerHTML='<div class="empty">有饮食记录的时间跨度不足 7 天，再记录几天就能反推了。</div>';}
+  else if(!c.fit||c.fit.n<2){cr.innerHTML='<div class="empty">需要窗口内 ≥2 次体重记录。建议每天早晨空腹、如厕后称重，波动最小。</div>';}
   else{
     const est=CalCore.estimateRealTdee({avgIntake:c.avgIntake,slopeKgPerDay:c.fit.slope,avgBurnRec:c.avgBurnRec});
     if(!est){cr.innerHTML='<div class="empty">数据不足，无法反推</div>';}
@@ -842,15 +852,19 @@ function renderCalibration(){
   $('#ledgerSub').textContent=spanTxt;
   const lb=$('#ledgerBody');
   if(!c.ready||c.predKg==null){lb.innerHTML='<div class="empty">需要身体资料与本时间段的饮食记录</div>';}
-  else if(c.actualKg==null){lb.innerHTML='<div class="empty">需要本时间段 ≥2 次体重记录才能核对（现有称重不足以计算趋势）。</div>';}
+  else if(c.spanDays<7){lb.innerHTML='<div class="empty">有饮食记录的跨度不足 7 天，先攒够一周再核对才有意义。</div>';}
+  else if(c.actualKg==null){lb.innerHTML='<div class="empty">需要窗口内 ≥2 次体重记录才能核对（建议每天早晨同一状态称重）。</div>';}
   else{
-    const lk=CalCore.ledgerCheck({days:c.days.length,predKg:c.predKg,actualKg:c.actualKg});
+    const lk=CalCore.ledgerCheck({days:c.spanDays,predKg:c.predKg,actualKg:c.actualKg});
+    if(!lk){lb.innerHTML='<div class="empty">数据不足，无法核对</div>';}
+    else{
     let line;
     if(lk.gapKg>0.05)line='实测比预测<b>少减了 '+Math.round(lk.gapKg*10)/10+' kg</b>，折算约 <b>'+lk.gapKcal+' 千卡/天</b>——最常见的原因是漏记或低估了摄入（零食、烹调油、含糖饮料），其次是实际消耗比公式低。';
     else if(lk.gapKg<-0.05)line='实测比预测<b>多减了 '+Math.round(-lk.gapKg*10)/10+' kg</b>，折算约 <b>'+(-lk.gapKcal)+' 千卡/天</b>——记录可能比实际吃得偏多，或日常活动比所选档位更高。';
     else line='实测与预测<b>基本一致</b>，说明你的记录质量很好 👍';
-    lb.innerHTML='<div class="verdict '+lk.cls+'">按你的记录，这 '+c.days.length+' 天体重应变化 <b>'+fmtKg(c.predKg)+' kg</b>；实测趋势变化 <b>'+fmtKg(c.actualKg)+' kg</b>。'+line+
-      '<div class="comp">预测只统计有饮食记录的 '+c.inDays.length+' 天；体重变化用回归斜率计算，已滤除单日水分波动。核对连续偏正时，优先排查漏记。</div></div>';
+    lb.innerHTML='<div class="verdict '+lk.cls+'">按你的记录，这 '+c.spanDays+' 天体重应变化 <b>'+fmtKg(c.predKg)+' kg</b>；实测趋势变化 <b>'+fmtKg(c.actualKg)+' kg</b>。'+line+
+      '<div class="comp">对比只统计有饮食记录的 '+c.inDays.length+' 天（'+fmtMD(c.spanStart)+'–'+fmtMD(c.spanEnd)+'）；体重变化用回归斜率计算，已滤除单日水分波动。核对连续偏正时，优先排查漏记。</div></div>';
+    }
   }
   /* —— 周度评估 —— */
   const blocks=CalCore.weeklyBlocks(c.days);
@@ -864,9 +878,16 @@ function renderCalibration(){
     const f=CalCore.weightSlope(db.weights,bStart,bEnd);
     const dw=(f&&c.ready)?f.slope*b.length:null;
     let chk='—';
-    if(dw!=null&&c.ready&&ins.length&&b.length>=7){
-      const l2=CalCore.ledgerCheck({days:b.length,predKg:-(ins.reduce((s,r)=>s+(calcTdee(db.profile)-r.in+r.ex+r.xt),0)/KCAL_PER_KG),actualKg:dw});
-      if(l2)chk=ledgerBadge(l2);
+    if(c.ready&&ins.length){ // 账实差按「块内有记录的首末日」对齐，避免漏记天干扰
+      const bs=ins[0].d,be=ins[ins.length-1].d;
+      const bSpan=Math.round((parseDS(be)-parseDS(bs))/86400000)+1;
+      if(bSpan>=7){
+        const bFit=CalCore.weightSlope(db.weights,bs,be);
+        if(bFit){
+          const l2=CalCore.ledgerCheck({days:bSpan,predKg:-(ins.reduce((s,r)=>s+(calcTdee(db.profile)-r.in+r.ex+r.xt),0)/KCAL_PER_KG),actualKg:bFit.slope*bSpan});
+          if(l2)chk=ledgerBadge(l2);
+        }
+      }
     }
     rowsHtml+='<tr><td>'+fmtMD(bStart)+'–'+fmtMD(bEnd)+'</td><td>'+ins.length+'/'+b.length+'</td><td>'+(avgIn==null?'—':avgIn)+'</td><td>'+(avgDef==null?'—':avgDef)+'</td><td>'+(dw==null?'—':fmtKg(dw)+' kg')+'</td><td>'+chk+'</td></tr>';
   }
@@ -1241,7 +1262,7 @@ $('#encFile').addEventListener('change',async e=>{
   e.target.value='';
 });
 $('#btnClear').addEventListener('click',()=>{
-  if(!confirm('确定清空所有饮食/运动/体重记录吗？（设置资料会保留，历史快照仍可救回）'))return;
+  if(!confirm('确定清空所有饮食/运动/零星/体重记录吗？（设置资料会保留，历史快照仍可救回）'))return;
   logOp('clear',{});
   db.intakes=[];db.exercises=[];db.extras=[];db.weights=[];
   saveDB();render();renderHealth();updateExportHint();toast('已清空记录');
@@ -1312,7 +1333,9 @@ function renderHealth(){
 
   /* ---- PWA：离线可用 + 可安装 + 更新提示 ---- */
   if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
+    let swReg=null;
     navigator.serviceWorker.register('./sw.js').then(reg=>{
+      swReg=reg;
       reg.addEventListener('updatefound',()=>{
         const nw=reg.installing;
         if(nw)nw.addEventListener('statechange',()=>{
@@ -1325,8 +1348,8 @@ function renderHealth(){
       if(refreshing)return;refreshing=true;location.reload();
     });
     $('#swReload').addEventListener('click',()=>{
-      const swc=navigator.serviceWorker.controller;
-      if(swc)swc.postMessage('SKIP_WAITING');
+      const waiting=swReg&&swReg.waiting; // 必须通知「等待中」的新 SW，而不是当前旧 SW
+      if(waiting)waiting.postMessage('SKIP_WAITING');
     });
   }
   if('ResizeObserver' in window){
