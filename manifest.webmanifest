@@ -1,0 +1,14 @@
+{
+  "name": "减脂热量记录器",
+  "short_name": "热量记录",
+  "description": "记录并校准减脂期的热量摄入、消耗与体重趋势",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f7f5",
+  "theme_color": "#1a9e63",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

@@ -1,10 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<!-- deploy-check v20261026: 由 GitHub 自动部署 -->
+<!-- 减脂热量记录器 v2.0.0 · 本地优先 + 自校准 · 源码：github.com/abab-dzdsz/calorie-tracker -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f4f7f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101815" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <title>减脂热量记录器</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -175,10 +179,16 @@ th:first-child,td:first-child{text-align:left}
 <main class="wrap">
   <div class="wrap" style="padding:0">
     <div id="storageBanner" class="banner warn" hidden>⚠️ 当前环境无法在本地保存数据（刷新后会丢失）。请把本文件下载到电脑后，直接双击用浏览器打开使用。</div>
+    <div id="dataBanner" class="banner warn" hidden><span id="dataBannerText"></span></div>
+    <div id="swBanner" class="banner" hidden><span>🔄 有新版本可用</span><button id="swReload" style="padding:6px 14px">立即更新</button></div>
   </div>
 
   <!-- ===== 记录 ===== -->
   <section id="panel-record" class="tabpanel">
+    <div id="backupBanner" class="banner" hidden>
+      <span>💾 已经积累了不少记录，建议导出一份备份文件保存到手机/电脑。</span>
+      <span class="row"><button data-goto="settings" style="padding:6px 14px">去导出</button><button id="backupLater" class="ghost" style="padding:6px 14px">稍后</button></span>
+    </div>
     <div id="onboard" class="banner" hidden>
       <span>👋 先填写身高体重等资料，我会帮你算出每日热量预算。</span>
       <button data-goto="settings" style="padding:6px 14px">去设置</button>
@@ -312,6 +322,23 @@ th:first-child,td:first-child{text-align:left}
     </div>
 
     <div class="card">
+      <h2>🔬 校准 · 真实消耗反推 <span class="sub" id="calibSub"></span></h2>
+      <div id="calibRealBody"></div>
+      <p class="foot">自报摄入平均偏差 20–40%，公式的活动系数也只是一档估计。这里用「体重实测变化 × 7700 千卡/kg」反推你真实的每日消耗，让公式给现实让路。</p>
+    </div>
+
+    <div class="card">
+      <h2>⚖️ 账实核对 <span class="sub" id="ledgerSub"></span></h2>
+      <div id="ledgerBody"></div>
+    </div>
+
+    <div class="card">
+      <h2>📅 周度评估 <span class="sub" id="weekSub"></span></h2>
+      <div class="tbl-scroll"><table id="weekTable"></table></div>
+      <p class="foot">趋势变化用回归斜率滤除每日水分波动；「账实差」= 实测 − 预测的体重变化，持续为正说明摄入可能被低估。</p>
+    </div>
+
+    <div class="card">
       <h2>🥦 营养平均 <span class="sub" id="anNutSub"></span></h2>
       <div id="anNutRows"></div>
       <p class="foot">按有饮食记录的天数取平均。本次更新之前的旧记录不含营养数据，会按 0 计入。</p>
@@ -338,6 +365,11 @@ th:first-child,td:first-child{text-align:left}
     <div class="card">
       <h2>📉 体重曲线</h2>
       <div id="chartWeight"></div>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--green)"></span>每日实测（含水波动）</span>
+        <span><span class="dot" style="background:var(--blue)"></span>趋势体重（指数滑动平均）</span>
+      </div>
+      <p class="foot">判读减脂进度看趋势线，不要看单日数字——每日体重 ±1–2kg 的波动大多是水分和肠道内容物，不是脂肪。</p>
     </div>
   </section>
 
@@ -378,22 +410,41 @@ th:first-child,td:first-child{text-align:left}
         <button id="btnExport">导出备份</button>
         <button id="btnImport" class="ghost">导入备份</button>
         <input type="file" id="importFile" accept=".json,application/json" hidden>
-        <button id="btnClear" class="danger">清空记录</button>
       </div>
-      <p class="foot">数据只保存在本机浏览器里，不会上传。换手机/电脑或换浏览器时，用「导出备份 → 导入备份」迁移。</p>
+      <div class="row" style="margin-top:8px">
+        <input type="password" id="encPwd" class="grow" placeholder="备份密码（加密备份用，至少 6 位）" autocomplete="new-password">
+        <button id="btnEncExport" class="ghost">加密导出</button>
+        <button id="btnEncImport" class="ghost">加密导入</button>
+        <input type="file" id="encFile" accept=".json,application/json" hidden>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnClear" class="danger">清空记录</button>
+        <span class="preview" id="exportHint" hidden style="color:var(--orange)"></span>
+      </div>
+      <p class="foot">数据保存在本机浏览器，并自动镜像到浏览器数据库（IndexedDB）防丢失，不会上传。「加密导出」用 AES-GCM 端到端加密，密码不设恢复，忘了就解不开。建议每两周导出一次。</p>
     </div>
 
-    <p class="foot center">⚠️ 所有数值均为估算，仅供健康管理参考，不构成医疗建议；如有基础疾病请遵医嘱。</p>
+    <div class="card">
+      <h2>🩺 数据健康</h2>
+      <div id="healthRows" class="empty-sm">—</div>
+      <p class="foot">本机保存 + 浏览器数据库镜像 + 历史快照三层防丢；「持久化许可」授予后，浏览器不会因存储压力自动清理本站数据。</p>
+    </div>
+
+    <p class="foot center">⚠️ 所有数值均为估算，仅供健康管理参考，不构成医疗建议；如有基础疾病请遵医嘱。<br>减脂热量记录器 v2.0.0 · 数据格式 v2 · 计算核心通过 19 项单元测试与合成数据回归</p>
   </section>
 </main>
 
 <div id="toast" role="status" aria-live="polite"></div>
 
+<script src="core.js"></script>
 <script>
 'use strict';
 /* ================= 常量与数据 ================= */
 const LS_KEY='jzCalorieTracker.v1';
-const KCAL_PER_KG=7700; // 经验值：消耗 7700 千卡约减 1kg 脂肪
+const LS_BACKUP='jzCalorieTracker.backup';          // 同步双写快照：防主键写入中途损坏
+const LS_QUARANTINE='jzCalorieTracker.quarantine';  // 损坏数据隔离区
+const SCHEMA_VERSION=2;
+const APP_VERSION='2.0.0';
 const MEALS=[['breakfast','🌅 早餐'],['lunch','☀️ 午餐'],['dinner','🌙 晚餐'],['snack','🍪 加餐']];
 // 食物库格式：[名称, 千卡, 蛋白质g, 脂肪g, 碳水g, 膳食纤维g, 钠mg]（每份估算值）
 const FOODS=[
@@ -418,22 +469,134 @@ const EXERCISES=[
 ['爬楼梯',8],['爬山/徒步',6],['羽毛球',5.5],['篮球',6.5],['乒乓球',4],['家务',3]
 ].map(([n,met])=>({n,met}));
 
-/* ================= 状态 ================= */
+/* ================= 状态与数据引擎 ================= */
 const DEFAULT_PROFILE={sex:'male',age:25,height:170,weight:65,activity:1.375,deficit:300,goalWeight:null};
-function defaultDB(){return{version:1,profile:Object.assign({},DEFAULT_PROFILE),customFoods:[],intakes:[],exercises:[],extras:[],weights:[]};}
-let storageOk=true;
+function defaultDB(){return{version:SCHEMA_VERSION,profile:Object.assign({},DEFAULT_PROFILE),customFoods:[],intakes:[],exercises:[],extras:[],weights:[],ops:[],lastExportAt:null};}
+function migrateDB(d){ // 逐版本迁移：旧格式补齐新增字段
+  if(d.version===1){d.ops=[];d.lastExportAt=null;if(!Array.isArray(d.extras))d.extras=[];d.version=2;}
+  return d;
+}
+function validateDB(d){ // 结构校验：坏了返回 false（进隔离区/走恢复）
+  if(!d||typeof d!=='object')return false;
+  if(!Array.isArray(d.intakes)||!Array.isArray(d.exercises)||!Array.isArray(d.weights))return false;
+  if(!d.profile||typeof d.profile!=='object')return false;
+  if(!Array.isArray(d.extras))d.extras=[];
+  if(!Array.isArray(d.customFoods))d.customFoods=[];
+  if(!Array.isArray(d.ops))d.ops=[];
+  return true;
+}
+let storageOk=true,idbOk=null,persistOk=null,loadProblem='';
 let db=defaultDB();
+let saveCount=0;
 (function load(){
   try{
     localStorage.setItem('__ct_test','1');localStorage.removeItem('__ct_test');
     const raw=localStorage.getItem(LS_KEY);
-    if(raw){
-      const d=JSON.parse(raw);
-      if(d&&typeof d==='object')db=Object.assign(defaultDB(),d,{profile:Object.assign({},DEFAULT_PROFILE,d.profile||{})});
+    if(raw!=null){
+      let d=null;
+      try{d=migrateDB(JSON.parse(raw));}catch(e){loadProblem='解析失败';}
+      if(d&&validateDB(d)){
+        db=Object.assign(defaultDB(),d,{profile:Object.assign({},DEFAULT_PROFILE,d.profile||{})});
+      }else{
+        try{localStorage.setItem(LS_QUARANTINE,raw);}catch(e){}
+        loadProblem=loadProblem||'结构异常';
+      }
     }
   }catch(e){storageOk=false;}
 })();
-function saveDB(){try{localStorage.setItem(LS_KEY,JSON.stringify(db));}catch(e){storageOk=false;}}
+
+/* ---- IndexedDB 镜像：localStorage 被清理/无痕模式时，从这里恢复 ---- */
+let idbPromise=null;
+function idbOpen(){
+  if(idbPromise)return idbPromise;
+  idbPromise=new Promise((res,rej)=>{
+    if(!('indexedDB' in window))return rej(new Error('no idb'));
+    const req=indexedDB.open('jzCalorieTracker',1);
+    req.onupgradeneeded=()=>{try{req.result.createObjectStore('kv');}catch(e){}};
+    req.onsuccess=()=>res(req.result);
+    req.onerror=()=>rej(req.error||new Error('idb open failed'));
+  }).catch(e=>{idbOk=false;idbPromise=null;throw e;});
+  return idbPromise;
+}
+function idbPut(key,val){
+  return idbOpen().then(r=>new Promise((res,rej)=>{
+    const tx=r.transaction('kv','readwrite');
+    tx.objectStore('kv').put(val,key);
+    tx.oncomplete=res;tx.onerror=()=>rej(tx.error);
+  })).then(()=>{idbOk=true;}).catch(()=>{idbOk=false;});
+}
+function idbGet(key){
+  return idbOpen().then(r=>new Promise((res,rej)=>{
+    const tx=r.transaction('kv','readonly');
+    const q=tx.objectStore('kv').get(key);
+    q.onsuccess=()=>res(q.result);
+    q.onerror=()=>rej(q.error);
+  })).catch(()=>{idbOk=false;return null;});
+}
+function applyDB(d){
+  if(!validateDB(d))return false;
+  db=Object.assign(defaultDB(),d,{profile:Object.assign({},DEFAULT_PROFILE,d.profile||{})});
+  return true;
+}
+async function snapshotToIdb(){ // 每 10 次保存留一档历史快照（最多 5 份）
+  try{
+    const snaps=(await idbGet('snaps'))||[];
+    snaps.push({t:Date.now(),raw:JSON.stringify(db)});
+    while(snaps.length>5)snaps.shift();
+    await idbPut('snaps',snaps);
+  }catch(e){}
+}
+function saveDB(){
+  try{
+    db.version=SCHEMA_VERSION;
+    const raw=JSON.stringify(db);
+    localStorage.setItem(LS_KEY,raw);
+    try{localStorage.setItem(LS_BACKUP,raw);}catch(e){}
+    if((++saveCount)%10===0)snapshotToIdb();
+    idbPut('db',raw);
+    if(navigator.storage&&navigator.storage.persist&&!persistOk){
+      navigator.storage.persist().then(v=>{persistOk=v;if(currentTab==='settings')renderHealth();}).catch(()=>{});
+    }
+  }catch(e){storageOk=false;}
+}
+function logOp(k,d){ // 操作日志：追加式记录写操作（审计与未来同步的基础），上限 500 条
+  db.ops=db.ops||[];
+  db.ops.push(Object.assign({t:Date.now(),k:k},d||{}));
+  if(db.ops.length>500)db.ops.splice(0,db.ops.length-500);
+}
+function afterDataReplace(){fillSettingsForm();updateComputed();render();}
+function showDataBanner(msg){$('#dataBannerText').textContent=msg;$('#dataBanner').hidden=false;}
+/* 启动恢复：主存储缺失/损坏时，依次尝试 IndexedDB 镜像 → 历史快照 → 本地备份键 */
+(async function restoreGuard(){
+  if(storageOk&&!loadProblem)return; // 主存储完好
+  try{
+    const mirror=await idbGet('db');
+    if(mirror&&applyDB(migrateDB(JSON.parse(mirror)))){
+      saveDB();afterDataReplace();
+      showDataBanner('已从浏览器数据库镜像恢复数据'+(loadProblem?'（原数据'+loadProblem+'，已移入隔离区）':''));
+      return;
+    }
+    const snaps=await idbGet('snaps');
+    if(snaps&&snaps.length){
+      for(let i=snaps.length-1;i>=0;i--){
+        try{
+          if(applyDB(migrateDB(JSON.parse(snaps[i].raw)))){
+            saveDB();afterDataReplace();
+            showDataBanner('已从历史快照恢复数据（'+new Date(snaps[i].t).toLocaleString()+'）');
+            return;
+          }
+        }catch(e){}
+      }
+    }
+    if(!storageOk)return; // 无法本地保存的环境，保留原提示
+    const bak=localStorage.getItem(LS_BACKUP);
+    if(bak&&applyDB(migrateDB(JSON.parse(bak)))){
+      saveDB();afterDataReplace();showDataBanner('已从本地备份恢复数据');
+      return;
+    }
+    if(loadProblem)showDataBanner('检测到数据'+loadProblem+'，未能自动恢复。原始内容已保留在隔离区，可在设置页排查。');
+  }catch(e){}
+})();
 
 let selectedDate=todayStr();
 let currentTab='record';
@@ -458,15 +621,9 @@ function mean(a){return a.reduce((s,x)=>s+x,0)/a.length;}
 let toastTimer=null;
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),1800);}
 
-/* ================= 计算 ================= */
+/* ================= 计算（纯函数在 core.js，此处只做数据接线） ================= */
+const {KCAL_PER_KG,calcBmr,calcTdee,calcBudget,exKcal,stepsKcal,niceCeil,niceFloor,niceTicks}=CalCore;
 function profileReady(){const p=db.profile;return +(p.weight)>0&&+(p.height)>0&&+(p.age)>0;}
-function calcBmr(p){
-  if(!(p.weight>0&&p.height>0&&p.age>0))return 0;
-  const base=10*p.weight+6.25*p.height-5*p.age;
-  return Math.round(p.sex==='female'?base-161:base+5);
-}
-function calcTdee(p){return Math.round(calcBmr(p)*(+p.activity||1.2));}
-function calcBudget(p){return calcTdee(p)-Math.max(0,+p.deficit||0);}
 function tdee(){return profileReady()?calcTdee(db.profile):null;}
 function budget(){return profileReady()?calcBudget(db.profile):null;}
 function intakeOn(ds){let s=0;for(const r of db.intakes)if(r.date===ds)s+=(+r.kcal||0);return Math.round(s);}
@@ -475,12 +632,7 @@ function extrasOn(ds){let s=0;for(const r of (db.extras||[]))if(r.date===ds)s+=(
 function neatPart(){return profileReady()?Math.max(0,calcTdee(db.profile)-calcBmr(db.profile)):0;} // 日常活动基础消耗，已折算进 TDEE
 function nutOn(ds){let p=0,f=0,c=0,fb=0,na=0;for(const r of db.intakes)if(r.date===ds){p+=+r.p||0;f+=+r.f||0;c+=+r.c||0;fb+=+r.fb||0;na+=+r.na||0;}return{p:Math.round(p),f:Math.round(f),c:Math.round(c),fb:Math.round(fb*10)/10,na:Math.round(na)};}
 function nutritionTargets(){
-  const w=+(db.profile.weight)||0,b=budget();
-  if(!(w>0)||!b)return null;
-  const p=Math.round(w*1.5);          // 蛋白质 1.5 g/kg（可接受 1.2–2.0）
-  const f=Math.round(b*0.25/9);       // 脂肪供能 25%（可接受 20–30%）
-  const c=Math.max(0,Math.round((b-p*4-f*9)/4)); // 碳水吃剩余预算
-  return{p:p,f:f,c:c,fb:25,na:2000};
+  return CalCore.nutritionTargets(+(db.profile.weight)||0,budget());
 }
 function nutRowHTML(label,val,target,unit,mode){
   const pct=target>0?val/target*100:0;
@@ -510,10 +662,7 @@ function rangeDates(){
   while(d<=end&&i<400){out.push(d);d=addDays(d,1);i++;}
   return out.length?out:[today];
 }
-function niceStep(raw){if(!(raw>0))return 1;const mag=Math.pow(10,Math.floor(Math.log10(raw)));const n=raw/mag;return(n<=1?1:n<=2?2:n<=2.5?2.5:n<=5?5:10)*mag;}
-function niceCeil(v){if(!(v>0))return 0;const s=niceStep(v);return Math.ceil(v/s)*s;}
-function niceFloor(v){if(!(v>0))return 0;const s=niceStep(v);return Math.floor(v/s)*s;}
-function niceTicks(min,max){const step=niceStep((max-min)/4||1);const out=[];for(let v=Math.ceil(min/step)*step;v<=max+1e-9;v+=step)out.push(+v.toFixed(4));return out.length?out:[min,max];}
+function niceStep(raw){return CalCore.niceStep(raw);} // 兼容旧调用点
 
 /* ================= 渲染 ================= */
 function render(){
@@ -625,6 +774,7 @@ function renderAnalysis(){
   }
   $('#anNutSub').textContent=inDays.length?('基于有饮食记录的 '+inDays.length+' 天的平均值'):'';
   $('#anNutRows').innerHTML=anNut?nutritionRowsHTML(anNut,nutT):'<div class="empty">该时间段还没有饮食记录</div>';
+  renderCalibration();
 }
 function verdictHTML(ready,avgDef,onBudget,inCount,recCount){
   if(!recCount)return '<div class="empty">该时间段还没有记录，先去「记录」页添加吧</div>';
@@ -642,6 +792,88 @@ function verdictHTML(ready,avgDef,onBudget,inCount,recCount){
     :'<div class="comp">期间还没有饮食记录，评估基于运动消耗。</div>';
   return '<div class="verdict '+cls+'">'+msg+comp+'</div>';
 }
+
+/* ================= 校准层：用体重实测给公式纠错 ================= */
+function calibInputs(){
+  const days=rangeDates();
+  const rows=days.map(d=>({d:d,in:intakeOn(d),ex:exOn(d),xt:extrasOn(d)}));
+  const inDays=rows.filter(r=>r.in>0);
+  const ready=profileReady();
+  let sumDef=0,avgBurnRec=0;
+  if(ready&&inDays.length){
+    sumDef=inDays.reduce((s,r)=>s+(calcTdee(db.profile)-r.in+r.ex+r.xt),0);
+    avgBurnRec=Math.round(mean(inDays.map(r=>r.ex+r.xt)));
+  }
+  const avgIntake=inDays.length?mean(inDays.map(r=>r.in)):null;
+  const fit=db.weights.length>=2?CalCore.weightSlope(db.weights,days[0],days[days.length-1]):null;
+  return{days:days,start:days[0],end:days[days.length-1],inDays:inDays,ready:ready,
+    avgBurnRec:avgBurnRec,avgIntake:avgIntake,fit:fit,
+    predKg:(ready&&inDays.length)?-(sumDef/KCAL_PER_KG):null,
+    actualKg:fit?fit.slope*days.length:null};
+}
+function fmtKg(v){return (v>0?'+':'')+Math.round(v*10)/10;}
+function ledgerBadge(l){
+  const cls=l.cls==='good'?'tgood':(l.cls==='bad'?'tbad':'');
+  return '<span class="'+cls+'">'+fmtKg(l.gapKg)+' kg / '+(l.gapKcal>0?'+':'')+l.gapKcal+' 千卡/天</span>';
+}
+function renderCalibration(){
+  const c=calibInputs();
+  const spanTxt=c.start+' 至 '+c.end+'（'+c.days.length+' 天）';
+  /* —— 真实消耗反推 —— */
+  $('#calibSub').textContent=spanTxt;
+  const cr=$('#calibRealBody');
+  if(!c.ready){cr.innerHTML='<div class="empty">完善身体资料后可用</div>';}
+  else if(!c.avgIntake||c.inDays.length<5){cr.innerHTML='<div class="empty">需要本时间段 ≥5 天的饮食记录（现有 '+c.inDays.length+' 天）。记录越完整，反推越准。</div>';}
+  else if(!c.fit){cr.innerHTML='<div class="empty">需要本时间段 ≥2 次体重记录。建议每天早晨空腹、如厕后称重，波动最小。</div>';}
+  else{
+    const est=CalCore.estimateRealTdee({avgIntake:c.avgIntake,slopeKgPerDay:c.fit.slope,avgBurnRec:c.avgBurnRec});
+    if(!est){cr.innerHTML='<div class="empty">数据不足，无法反推</div>';}
+    else{
+      const formula=calcTdee(db.profile),diff=est.realBase-formula;
+      let msg,cls='good';
+      if(diff>=150){cls='warn';msg='你的<b>真实基础消耗比公式高约 '+diff+' 千卡/天</b>——公式低估了你。可把「日常活动水平」上调一档，预算会相应提高。';}
+      else if(diff<=-150){cls='warn';msg='你的<b>真实基础消耗比公式低约 '+(-diff)+' 千卡/天</b>——可能代谢偏低，或摄入整体被低估。建议以实测为准，适当下调预算。';}
+      else{msg='公式估计与实测<b>基本一致</b>（差 '+Math.abs(diff)+' 千卡/天，±150 以内视为一致），按公式执行即可。';}
+      cr.innerHTML='<div class="verdict '+cls+'">按体重实测反推：真实总消耗均值约 <b>'+est.realTotal+' 千卡/天</b>，其中基础消耗约 <b>'+est.realBase+'</b>（公式 TDEE '+formula+'）。'+msg+
+        '<div class="comp">依据：'+spanTxt+' · 饮食记录 '+c.inDays.length+' 天 · 称重 '+c.fit.n+' 次 · 平均摄入 '+Math.round(c.avgIntake)+' 千卡。窗口越长越可信，建议以 4 周以上数据为准。</div></div>';
+    }
+  }
+  /* —— 账实核对 —— */
+  $('#ledgerSub').textContent=spanTxt;
+  const lb=$('#ledgerBody');
+  if(!c.ready||c.predKg==null){lb.innerHTML='<div class="empty">需要身体资料与本时间段的饮食记录</div>';}
+  else if(c.actualKg==null){lb.innerHTML='<div class="empty">需要本时间段 ≥2 次体重记录才能核对（现有称重不足以计算趋势）。</div>';}
+  else{
+    const lk=CalCore.ledgerCheck({days:c.days.length,predKg:c.predKg,actualKg:c.actualKg});
+    let line;
+    if(lk.gapKg>0.05)line='实测比预测<b>少减了 '+Math.round(lk.gapKg*10)/10+' kg</b>，折算约 <b>'+lk.gapKcal+' 千卡/天</b>——最常见的原因是漏记或低估了摄入（零食、烹调油、含糖饮料），其次是实际消耗比公式低。';
+    else if(lk.gapKg<-0.05)line='实测比预测<b>多减了 '+Math.round(-lk.gapKg*10)/10+' kg</b>，折算约 <b>'+(-lk.gapKcal)+' 千卡/天</b>——记录可能比实际吃得偏多，或日常活动比所选档位更高。';
+    else line='实测与预测<b>基本一致</b>，说明你的记录质量很好 👍';
+    lb.innerHTML='<div class="verdict '+lk.cls+'">按你的记录，这 '+c.days.length+' 天体重应变化 <b>'+fmtKg(c.predKg)+' kg</b>；实测趋势变化 <b>'+fmtKg(c.actualKg)+' kg</b>。'+line+
+      '<div class="comp">预测只统计有饮食记录的 '+c.inDays.length+' 天；体重变化用回归斜率计算，已滤除单日水分波动。核对连续偏正时，优先排查漏记。</div></div>';
+  }
+  /* —— 周度评估 —— */
+  const blocks=CalCore.weeklyBlocks(c.days);
+  let rowsHtml='';
+  for(const b of blocks){
+    const bStart=b[0],bEnd=b[b.length-1];
+    const rs=c.days.map(d=>({d:d,in:intakeOn(d),ex:exOn(d),xt:extrasOn(d)})).filter(r=>r.d>=bStart&&r.d<=bEnd);
+    const ins=rs.filter(r=>r.in>0);
+    const avgIn=ins.length?Math.round(mean(ins.map(r=>r.in))):null;
+    const avgDef=(c.ready&&ins.length)?Math.round(mean(ins.map(r=>calcTdee(db.profile)-r.in+r.ex+r.xt))):null;
+    const f=CalCore.weightSlope(db.weights,bStart,bEnd);
+    const dw=(f&&c.ready)?f.slope*b.length:null;
+    let chk='—';
+    if(dw!=null&&c.ready&&ins.length&&b.length>=7){
+      const l2=CalCore.ledgerCheck({days:b.length,predKg:-(ins.reduce((s,r)=>s+(calcTdee(db.profile)-r.in+r.ex+r.xt),0)/KCAL_PER_KG),actualKg:dw});
+      if(l2)chk=ledgerBadge(l2);
+    }
+    rowsHtml+='<tr><td>'+fmtMD(bStart)+'–'+fmtMD(bEnd)+'</td><td>'+ins.length+'/'+b.length+'</td><td>'+(avgIn==null?'—':avgIn)+'</td><td>'+(avgDef==null?'—':avgDef)+'</td><td>'+(dw==null?'—':fmtKg(dw)+' kg')+'</td><td>'+chk+'</td></tr>';
+  }
+  $('#weekTable').innerHTML='<thead><tr><th>周期</th><th>记录天</th><th>日均摄入</th><th>日均缺口</th><th>趋势变化</th><th>账实差</th></tr></thead><tbody>'+
+    (rowsHtml||'<tr><td colspan="6" class="empty">暂无数据</td></tr>')+'</tbody>';
+  $('#weekSub').textContent=blocks.length+' 个周期';
+}
 function renderWeight(){
   const ws=db.weights.slice().sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
   const latest=ws[ws.length-1],first=ws[0],goal=db.profile.goalWeight;
@@ -658,8 +890,11 @@ function renderWeight(){
     if(g<=0){goalTxt='已达标 🎉';}
     else{goalTxt=g+' kg';}
   }
+  const trendArr=CalCore.emaTrend(db.weights);
+  const lastTrend=trendArr.length?Math.round(trendArr[trendArr.length-1].trend*10)/10:null;
   $('#wStats').innerHTML=
     stat('当前体重',cur==null?'—':cur,'kg')+
+    stat('趋势体重',lastTrend==null?'—':lastTrend,'kg')+
     stat('较首次记录',diffTxt,'',diffCls)+
     stat('距目标体重',goalTxt,'');
   drawWeightChart();
@@ -728,6 +963,10 @@ function drawWeightChart(){
     s+='<text x="'+(L-6)+'" y="'+(yy+4)+'" text-anchor="end" font-size="11" fill="'+themeColor('--muted')+'">'+v+'</text>';
   }
   s+='<polyline points="'+pts.map(p=>X(p.date).toFixed(1)+','+Y(p.kg).toFixed(1)).join(' ')+'" fill="none" stroke="'+themeColor('--green')+'" stroke-width="2"/>';
+  const trendArr=CalCore.emaTrend(pts);
+  if(trendArr.length>1){
+    s+='<polyline points="'+trendArr.map(p=>X(p.date).toFixed(1)+','+Y(p.trend).toFixed(1)).join(' ')+'" fill="none" stroke="'+themeColor('--blue')+'" stroke-width="2"/>';
+  }
   for(const p of pts){
     s+='<circle cx="'+X(p.date).toFixed(1)+'" cy="'+Y(p.kg).toFixed(1)+'" r="3.5" fill="'+themeColor('--green')+'"><title>'+p.date+'：'+p.kg+' kg</title></circle>';
   }
@@ -772,13 +1011,14 @@ function onFoodSubmit(e){
   let p=parseFloat($('#fP').value),f=parseFloat($('#fF').value),c=parseFloat($('#fC').value),fb=parseFloat($('#fFb').value),na=parseFloat($('#fNa').value);
   const hasNut=[p,f,c,fb,na].some(v=>v>0);
   let est=false;
-  if(!hasNut){ // 只填热量时按常见供能比例估算：蛋白 15% · 脂肪 30% · 碳水 55%
-    est=true;
-    p=Math.round(kcal*0.15/4*10)/10;f=Math.round(kcal*0.30/9*10)/10;c=Math.round(kcal*0.55/4*10)/10;fb=0;na=0;
+  if(!hasNut){ // 只填热量时按常见供能比例估算（15/30/55），公式在 core.js
+    const m=CalCore.estimateMacros(kcal);
+    est=true;p=m.p;f=m.f;c=m.c;fb=0;na=0;
   }
   const r1=v=>Math.round(v*qty*10)/10;
   db.intakes.push({id:uid(),date:selectedDate,meal:$('#fMeal').value,name:name,kcal:Math.round(kcal*qty),qty:qty,p:r1(p),f:r1(f),c:r1(c),fb:r1(fb),na:Math.round(na*qty),est:est,time:nowHM()});
   if(!findFood(name))db.customFoods.push({n:name,k:Math.round(kcal),p:p,f:f,c:c,fb:fb,na:na,est:est});
+  logOp('add_intake',{name:name,kcal:Math.round(kcal*qty),meal:$('#fMeal').value,date:selectedDate});
   saveDB();render();toast('已记录 ✅');
   nameEl.value='';$('#fKcal').value='';$('#fQty').value=1;
   $('#fP').value='';$('#fF').value='';$('#fC').value='';$('#fFb').value='';$('#fNa').value='';
@@ -786,7 +1026,7 @@ function onFoodSubmit(e){
 }
 function updateExPreview(){
   const i=+$('#eType').value,min=+$('#eMin').value,w=+(db.profile.weight)||0;
-  $('#ePreview').textContent=(min>0&&w>0&&EXERCISES[i])?('≈ '+Math.round(EXERCISES[i].met*w*min/60)+' 千卡'):'';
+  $('#ePreview').textContent=(min>0&&w>0&&EXERCISES[i])?('≈ '+exKcal(EXERCISES[i].met,w,min)+' 千卡'):'';
 }
 function onExSubmit(e){
   e.preventDefault();
@@ -794,13 +1034,15 @@ function onExSubmit(e){
   if(!(min>0)){toast('请填写运动时长（分钟）');return;}
   const ex=EXERCISES[i];if(!ex)return;
   const w=+(db.profile.weight)||0;
-  db.exercises.push({id:uid(),date:selectedDate,name:ex.n,minutes:min,kcal:w>0?Math.round(ex.met*w*min/60):0});
+  const kcal=exKcal(ex.met,w,min);
+  db.exercises.push({id:uid(),date:selectedDate,name:ex.n,minutes:min,kcal:kcal});
+  logOp('add_exercise',{name:ex.n,kcal:kcal,minutes:min,date:selectedDate});
   saveDB();render();toast('已记录 ✅');
   $('#eMin').value='';updateExPreview();
 }
 function updateStepsPreview(){
   const s=+$('#xSteps').value,w=+(db.profile.weight)||0;
-  $('#stepsPreview').textContent=(s>0&&w>0)?('≈ '+Math.round(s*0.0005*w)+' 千卡'):'';
+  $('#stepsPreview').textContent=(s>0&&w>0)?('≈ '+stepsKcal(s,w)+' 千卡'):'';
 }
 function onExtraSubmit(e){
   e.preventDefault();
@@ -809,6 +1051,7 @@ function onExtraSubmit(e){
   const name=$('#xName').value.trim()||'日常活动';
   db.extras=db.extras||[];
   db.extras.push({id:uid(),date:selectedDate,name:name,kcal:Math.round(kcal)});
+  logOp('add_extra',{name:name,kcal:Math.round(kcal),date:selectedDate});
   saveDB();render();toast('已记录 ✅');
   $('#xName').value='';$('#xKcal').value='';
 }
@@ -817,9 +1060,10 @@ function onStepsSubmit(e){
   const s=+$('#xSteps').value,w=+(db.profile.weight)||0;
   if(!(s>0)){toast('请填写步数');return;}
   if(!(w>0)){toast('请先在【设置】中填写体重');return;}
-  const kcal=Math.round(s*0.0005*w); // 粗略估算：每步每公斤体重约 0.0005 千卡
+  const kcal=stepsKcal(s,w); // 粗略估算：每步每公斤体重约 0.0005 千卡
   db.extras=db.extras||[];
   db.extras.push({id:uid(),date:selectedDate,name:'步行 '+Math.round(s)+' 步',kcal:kcal});
+  logOp('add_extra',{name:'步行 '+Math.round(s)+' 步',kcal:kcal,date:selectedDate});
   saveDB();render();toast('已记录 ✅');
   $('#xSteps').value='';updateStepsPreview();
 }
@@ -832,6 +1076,7 @@ function onWeightSubmit(e){
   db.weights=db.weights.filter(w=>w.date!==date);
   db.weights.push({date:date,kg:v});
   db.profile.weight=v;
+  logOp('set_weight',{date:date,kg:v});
   saveDB();$('#sWeight').value=v;updateComputed();updateStepsPreview();
   $('#wKg').value='';
   render();toast('体重已记录 ✅');
@@ -873,6 +1118,7 @@ function switchTab(name){
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('.tabpanel').forEach(p=>{p.hidden=p.id!=='panel-'+name;});
   render();
+  if(name==='settings'){renderHealth();updateExportHint();}
 }
 
 /* ================= 事件绑定 ================= */
@@ -880,9 +1126,9 @@ document.addEventListener('click',e=>{
   const del=e.target.closest('[data-del]');
   if(del){
     const type=del.dataset.del,id=del.dataset.id;
-    if(type==='intake')db.intakes=db.intakes.filter(r=>r.id!==id);
-    else if(type==='exercise')db.exercises=db.exercises.filter(r=>r.id!==id);
-    else if(type==='extra')db.extras=(db.extras||[]).filter(r=>r.id!==id);
+    if(type==='intake'){db.intakes=db.intakes.filter(r=>r.id!==id);logOp('del_intake',{id:id});}
+    else if(type==='exercise'){db.exercises=db.exercises.filter(r=>r.id!==id);logOp('del_exercise',{id:id});}
+    else if(type==='extra'){db.extras=(db.extras||[]).filter(r=>r.id!==id);logOp('del_extra',{id:id});}
     saveDB();render();return;
   }
   const gotoBtn=e.target.closest('[data-goto]');
@@ -903,13 +1149,38 @@ document.addEventListener('click',e=>{
 });
 
 /* ================= 数据管理 ================= */
-$('#btnExport').addEventListener('click',()=>{
-  const blob=new Blob([JSON.stringify(Object.assign({},db,{exportedAt:new Date().toISOString(),app:'减脂热量记录器'}),null,2)],{type:'application/json'});
+function downloadText(text,name){
+  const blob=new Blob([text],{type:'application/json'});
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);
-  a.download='热量记录备份_'+todayStr()+'.json';
+  a.href=URL.createObjectURL(blob);a.download=name;
   document.body.appendChild(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+}
+function markExported(enc){db.lastExportAt=new Date().toISOString();logOp('export',{enc:!!enc});saveDB();updateExportHint();renderHealth();}
+function exportReminderNeeded(){
+  const n=db.intakes.length+db.weights.length+db.exercises.length+(db.extras||[]).length;
+  if(n<30)return false;
+  if(!db.lastExportAt)return true;
+  return (Date.now()-new Date(db.lastExportAt).getTime())>14*86400000;
+}
+function updateExportHint(){
+  const need=exportReminderNeeded();
+  const bb=$('#backupBanner');
+  if(bb)bb.hidden=!need||sessionStorage.getItem('ctBackupLater')==='1';
+  const hint=$('#exportHint');
+  if(hint){hint.hidden=!need;hint.textContent=need?'⚠️ 超过 14 天未备份，建议导出':'';}
+}
+function confirmImport(d,enc){
+  if(!d||!Array.isArray(d.intakes)||!Array.isArray(d.exercises)||!Array.isArray(d.weights))throw new Error('shape');
+  if(!confirm('导入会覆盖当前所有数据，确定继续吗？'))return false;
+  if(!applyDB(migrateDB(d))){toast('文件内容不完整，导入失败');return false;}
+  logOp('import',{enc:!!enc});
+  saveDB();afterDataReplace();updateExportHint();renderHealth();toast('导入成功 ✅');
+  return true;
+}
+$('#btnExport').addEventListener('click',()=>{
+  downloadText(JSON.stringify(Object.assign({},db,{exportedAt:new Date().toISOString(),app:'减脂热量记录器'}),null,2),'热量记录备份_'+todayStr()+'.json');
+  markExported(false);
   toast('已导出备份文件');
 });
 $('#btnImport').addEventListener('click',()=>$('#importFile').click());
@@ -917,22 +1188,78 @@ $('#importFile').addEventListener('change',e=>{
   const file=e.target.files[0];if(!file)return;
   const reader=new FileReader();
   reader.onload=()=>{
+    try{confirmImport(JSON.parse(reader.result),false);}
+    catch(err){toast('文件格式不正确，导入失败');}
+  };
+  reader.readAsText(file);
+  e.target.value='';
+});
+
+/* ---- 端到端加密备份：PBKDF2(150k) 派生密钥 + AES-GCM，密码不落盘 ---- */
+function b64(u8){let s='';for(let i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s);}
+function ub64(s){const bin=atob(s);const u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u;}
+async function deriveKey(pwd,salt){
+  const km=await crypto.subtle.importKey('raw',new TextEncoder().encode(pwd),'PBKDF2',false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:150000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function makeEncryptedBackup(pwd){
+  const salt=crypto.getRandomValues(new Uint8Array(16));
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const key=await deriveKey(pwd,salt);
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,new TextEncoder().encode(JSON.stringify(db)));
+  return JSON.stringify({app:'ct-encrypted-backup',v:1,kdf:'PBKDF2-SHA256-150000',enc:'AES-GCM-256',salt:b64(salt),iv:b64(iv),data:b64(new Uint8Array(ct))});
+}
+async function readEncryptedBackup(text,pwd){
+  const env=JSON.parse(text);
+  if(!env||env.app!=='ct-encrypted-backup')throw new Error('not-enc');
+  const key=await deriveKey(pwd,ub64(env.salt));
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:ub64(env.iv)},key,ub64(env.data));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+$('#btnEncExport').addEventListener('click',async()=>{
+  const pwd=$('#encPwd').value;
+  if(pwd.length<6){toast('请先在密码框输入至少 6 位备份密码');return;}
+  try{
+    downloadText(await makeEncryptedBackup(pwd),'热量记录加密备份_'+todayStr()+'.json');
+    markExported(true);
+    toast('已导出加密备份 ✅');
+  }catch(e){toast('加密失败：'+(e.message||e));}
+});
+$('#btnEncImport').addEventListener('click',()=>$('#encFile').click());
+$('#encFile').addEventListener('change',async e=>{
+  const file=e.target.files[0];if(!file)return;
+  const pwd=$('#encPwd').value;
+  if(!pwd){toast('请先在密码框输入加密时设置的密码');e.target.value='';return;}
+  const reader=new FileReader();
+  reader.onload=async()=>{
     try{
-      const d=JSON.parse(reader.result);
-      if(!d||!Array.isArray(d.intakes)||!Array.isArray(d.exercises)||!Array.isArray(d.weights))throw new Error('shape');
-      if(!confirm('导入会覆盖当前所有数据，确定继续吗？'))return;
-      db=Object.assign(defaultDB(),d,{profile:Object.assign({},DEFAULT_PROFILE,d.profile||{})});
-      saveDB();fillSettingsForm();updateComputed();render();toast('导入成功 ✅');
-    }catch(err){toast('文件格式不正确，导入失败');}
+      const d=await readEncryptedBackup(reader.result,pwd);
+      confirmImport(d,true);
+    }catch(err){toast('解密失败：密码错误或文件损坏');}
   };
   reader.readAsText(file);
   e.target.value='';
 });
 $('#btnClear').addEventListener('click',()=>{
-  if(!confirm('确定清空所有饮食/运动/体重记录吗？（设置资料会保留）'))return;
-  db.intakes=[];db.exercises=[];db.weights=[];
-  saveDB();render();toast('已清空记录');
+  if(!confirm('确定清空所有饮食/运动/体重记录吗？（设置资料会保留，历史快照仍可救回）'))return;
+  logOp('clear',{});
+  db.intakes=[];db.exercises=[];db.extras=[];db.weights=[];
+  saveDB();render();renderHealth();updateExportHint();toast('已清空记录');
 });
+
+/* ---- 数据健康 ---- */
+function renderHealth(){
+  const el=$('#healthRows');if(!el)return;
+  const rows=[
+    ['本地存储（localStorage）',storageOk?'正常':'不可用',storageOk],
+    ['浏览器数据库镜像（IndexedDB）',idbOk==null?'待首次保存':(idbOk?'正常':'不可用'),idbOk!==false],
+    ['持久化许可（防浏览器清理）',persistOk==null?'未申请':(persistOk?'已授予':'未授予'),!!persistOk],
+    ['数据格式','v'+db.version+'（当前 v'+SCHEMA_VERSION+'）',db.version===SCHEMA_VERSION],
+    ['记录量','饮食 '+db.intakes.length+' · 运动 '+db.exercises.length+' · 零星 '+(db.extras||[]).length+' · 体重 '+db.weights.length+' · 日志 '+(db.ops||[]).length,true],
+    ['上次导出备份',db.lastExportAt?new Date(db.lastExportAt).toLocaleString():'从未导出',!!db.lastExportAt]
+  ];
+  el.innerHTML=rows.map(r=>'<div class="item"><span class="iname">'+r[0]+'</span><span class="ikcal '+(r[2]?'tgood':'tbad')+'">'+r[1]+'</span></div>').join('');
+}
 
 /* ================= 初始化 ================= */
 (function init(){
@@ -972,7 +1299,36 @@ $('#btnClear').addEventListener('click',()=>{
       else{const v=parseFloat(el.value);db.profile[key]=isNaN(v)?null:v;}
       saveDB();updateComputed();updateExPreview();updateStepsPreview();renderHeader();
     });
+    $('#'+f[0]).addEventListener('change',()=>{ // 停止输入时把最终值记入操作日志
+      logOp('set_profile',{key:f[1],value:$('#'+f[0]).value});
+      saveDB();
+    });
   });
+  $('#backupLater').addEventListener('click',()=>{
+    try{sessionStorage.setItem('ctBackupLater','1');}catch(e){}
+    $('#backupBanner').hidden=true;
+  });
+  updateExportHint();renderHealth();
+
+  /* ---- PWA：离线可用 + 可安装 + 更新提示 ---- */
+  if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
+    navigator.serviceWorker.register('./sw.js').then(reg=>{
+      reg.addEventListener('updatefound',()=>{
+        const nw=reg.installing;
+        if(nw)nw.addEventListener('statechange',()=>{
+          if(nw.state==='installed'&&navigator.serviceWorker.controller)$('#swBanner').hidden=false;
+        });
+      });
+    }).catch(()=>{});
+    let refreshing=false;
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(refreshing)return;refreshing=true;location.reload();
+    });
+    $('#swReload').addEventListener('click',()=>{
+      const swc=navigator.serviceWorker.controller;
+      if(swc)swc.postMessage('SKIP_WAITING');
+    });
+  }
   if('ResizeObserver' in window){
     let raf=0;
     new ResizeObserver(()=>{
