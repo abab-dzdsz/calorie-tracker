@@ -135,6 +135,64 @@
     return blocks;
   }
 
+  /* ---- 双设备合并（Gist 同步用，纯函数、确定性） ----
+     原则：
+     · 带记录（intakes/exercises/extras）按 id 取并集——id 唯一，天然无冲突
+     · 体重按日期，自定义食物按名称并集
+     · 体重同日期 / 资料同字段冲突时：取「较新的写操作」一侧（依据双方 ops 日志）；
+       对方有操作记录而本机没有（如新设备）则取对方；两边都无记录则保守保留本地
+     · 操作日志按时间排序合并去重（上限 800 条）
+     返回合并后的新对象，不修改入参。 */
+  function lastOpTime(d, kind, pred) {
+    let t = -1;
+    for (const o of (d && d.ops) || []) {
+      if (o && o.k === kind && (!pred || pred(o)) && typeof o.t === 'number') t = Math.max(t, o.t);
+    }
+    return t;
+  }
+  function mergeDB(local, remote) {
+    if (!remote || typeof remote !== 'object') return local;
+    const out = JSON.parse(JSON.stringify(local));
+    for (const key of ['intakes', 'exercises', 'extras']) {
+      const seen = new Set((out[key] || []).map(r => r.id));
+      for (const r of remote[key] || []) if (!seen.has(r.id)) (out[key] = out[key] || []).push(r);
+    }
+    const names = new Set((out.customFoods || []).map(f => f.n));
+    for (const f of remote.customFoods || []) if (!names.has(f.n)) (out.customFoods = out.customFoods || []).push(f);
+    for (const w of remote.weights || []) {
+      const i = out.weights.findIndex(x => x.date === w.date);
+      if (i < 0) out.weights.push(w);
+      else {
+        const lt = lastOpTime(local, 'set_weight', o => o.date === w.date);
+        const rt = lastOpTime(remote, 'set_weight', o => o.date === w.date);
+        if (rt > lt) out.weights[i] = w;
+      }
+    }
+    const localTouched = (local.ops || []).some(o => o && o.k === 'set_profile');
+    const remoteTouched = (remote.ops || []).some(o => o && o.k === 'set_profile');
+    for (const key in remote.profile || {}) {
+      if (!(key in out.profile)) continue;                       // 未知字段不合并
+      if (remote.profile[key] == null && out.profile[key] != null) continue; // 空值不覆盖
+      const lt = lastOpTime(local, 'set_profile', o => o.key === key);
+      const rt = lastOpTime(remote, 'set_profile', o => o.key === key);
+      // 本机从没改过资料而对方改过（如新设备首次合并）→ 整体采纳对方资料；
+      // 两边都改过 → 按各字段较新的写操作
+      if (rt > lt || (rt >= 0 && lt < 0) || (remoteTouched && !localTouched)) out.profile[key] = remote.profile[key];
+    }
+    const sig = new Set((out.ops || []).map(o => JSON.stringify(o)));
+    for (const o of remote.ops || []) {
+      const s = JSON.stringify(o);
+      if (!sig.has(s)) { sig.add(s); out.ops.push(o); }
+    }
+    out.ops.sort((a, b) => (a.t || 0) - (b.t || 0));
+    if (out.ops.length > 800) out.ops.splice(0, out.ops.length - 800);
+    if (remote.lastExportAt && (!out.lastExportAt || new Date(remote.lastExportAt) > new Date(out.lastExportAt))) {
+      out.lastExportAt = remote.lastExportAt;
+    }
+    out.version = Math.max(out.version || 2, remote.version || 2);
+    return out;
+  }
+
   /* ---- 图表刻度（取"好看"的步长） ---- */
   function niceStep(raw) {
     if (!(raw > 0)) return 1;
@@ -158,7 +216,7 @@
     estimateMacros: estimateMacros, nutritionTargets: nutritionTargets,
     emaTrend: emaTrend, weightSlope: weightSlope,
     estimateRealTdee: estimateRealTdee, ledgerCheck: ledgerCheck,
-    weeklyBlocks: weeklyBlocks,
+    weeklyBlocks: weeklyBlocks, mergeDB: mergeDB,
     niceStep: niceStep, niceCeil: niceCeil, niceFloor: niceFloor, niceTicks: niceTicks
   };
   root.CalCore = CalCore;

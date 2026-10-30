@@ -156,3 +156,81 @@ test('合成数据回归：账实核对 gap ≤ ±60 千卡/天（记录误差�
   assert.ok(r, '账实核对应可计算');
   assert.ok(Math.abs(r.gapKcal) <= 60, 'gapKcal=' + r.gapKcal + '，期望 ≤60（真实缺口记录无误时接近 0）');
 });
+
+/* ============================================================
+   双设备合并（验收标准：两端各改一条，合并后无丢失、无重复）
+   ============================================================ */
+function mkDB(over) {
+  return Object.assign({
+    version: 2,
+    profile: { sex: 'male', age: 25, height: 170, weight: 65, activity: 1.375, deficit: 300, goalWeight: null },
+    customFoods: [], intakes: [], exercises: [], extras: [], weights: [], ops: [], lastExportAt: null
+  }, over);
+}
+test('合并：两端各加一条记录 → 都保留，无重复（双设备演练）', () => {
+  const a = mkDB();
+  a.intakes.push({ id: 'a1', date: '2026-10-26', meal: 'lunch', name: 'A设备记录', kcal: 300 });
+  const b = mkDB();
+  b.intakes.push({ id: 'b1', date: '2026-10-26', meal: 'dinner', name: 'B设备记录', kcal: 500 });
+  b.extras.push({ id: 'b2', date: '2026-10-26', name: '步行', kcal: 100 });
+  const m = C.mergeDB(a, b);
+  assert.strictEqual(m.intakes.length, 2);
+  assert.ok(m.intakes.some(r => r.id === 'a1') && m.intakes.some(r => r.id === 'b1'));
+  assert.strictEqual(m.extras.length, 1);
+  assert.strictEqual(C.mergeDB(m, b).intakes.length, 2, '重复合并不产生重复');
+});
+test('合并：同 id 记录不重复，自定义食物按名称并集', () => {
+  const a = mkDB();
+  const rec = { id: 'x1', date: '2026-10-26', meal: 'lunch', name: '同一条', kcal: 100 };
+  a.intakes.push(rec);
+  a.customFoods.push({ n: '自制菜', k: 200 });
+  const b = mkDB();
+  b.intakes.push(Object.assign({}, rec));
+  b.customFoods.push({ n: '自制菜', k: 200 }, { n: '另一种', k: 150 });
+  const m = C.mergeDB(a, b);
+  assert.strictEqual(m.intakes.length, 1);
+  assert.strictEqual(m.customFoods.length, 2);
+});
+test('合并：体重同日期冲突 → 较新的 set_weight 操作胜出', () => {
+  const a = mkDB();
+  a.weights.push({ date: '2026-10-26', kg: 70 });
+  a.ops.push({ t: 100, k: 'set_weight', date: '2026-10-26', kg: 70 });
+  const b = mkDB();
+  b.weights.push({ date: '2026-10-26', kg: 69 });
+  b.ops.push({ t: 200, k: 'set_weight', date: '2026-10-26', kg: 69 });
+  assert.strictEqual(C.mergeDB(a, b).weights[0].kg, 69, 'B 更新晚 → 取 B');
+  assert.strictEqual(C.mergeDB(b, a).weights[0].kg, 69, '合并方向不影响结果');
+});
+test('合并：新设备（无操作日志）能拿到对方的资料与体重', () => {
+  const fresh = mkDB();
+  const old = mkDB();
+  old.profile.weight = 72.5;
+  old.profile.deficit = 400;
+  old.weights.push({ date: '2026-10-25', kg: 72.8 });
+  old.ops.push({ t: 500, k: 'set_profile', key: 'weight', value: '72.5' });
+  old.ops.push({ t: 501, k: 'set_weight', date: '2026-10-25', kg: 72.8 });
+  const m = C.mergeDB(fresh, old);
+  assert.strictEqual(m.profile.weight, 72.5);
+  assert.strictEqual(m.profile.deficit, 400);
+  assert.strictEqual(m.weights.length, 1);
+});
+test('合并：操作日志按时间合并去重，lastExportAt 取较新', () => {
+  const a = mkDB();
+  a.ops.push({ t: 100, k: 'add_intake' });
+  a.lastExportAt = '2026-10-25T10:00:00Z';
+  const b = mkDB();
+  b.ops.push({ t: 100, k: 'add_intake' }, { t: 300, k: 'clear' });
+  b.lastExportAt = '2026-10-26T10:00:00Z';
+  const m = C.mergeDB(a, b);
+  assert.strictEqual(m.ops.length, 2, '相同操作去重');
+  assert.ok(m.ops[0].t <= m.ops[1].t, '按时间有序');
+  assert.strictEqual(m.lastExportAt, '2026-10-26T10:00:00Z');
+});
+test('合并：remote 无效时原样返回，且不修改入参', () => {
+  const a = mkDB();
+  a.intakes.push({ id: 'z1' });
+  const snapshot = JSON.stringify(a);
+  assert.strictEqual(C.mergeDB(a, null), a);
+  C.mergeDB(a, mkDB());
+  assert.strictEqual(JSON.stringify(a), snapshot, 'local 不被修改');
+});

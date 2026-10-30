@@ -412,7 +412,7 @@ th:first-child,td:first-child{text-align:left}
         <input type="file" id="importFile" accept=".json,application/json" hidden>
       </div>
       <div class="row" style="margin-top:8px">
-        <input type="password" id="encPwd" class="grow" placeholder="备份密码（加密备份用，至少 6 位）" autocomplete="new-password">
+        <input type="password" id="encPwd" class="grow" placeholder="备份密码（加密备份 / 云同步用，至少 6 位）" autocomplete="new-password">
         <button id="btnEncExport" class="ghost">加密导出</button>
         <button id="btnEncImport" class="ghost">加密导入</button>
         <input type="file" id="encFile" accept=".json,application/json" hidden>
@@ -425,12 +425,26 @@ th:first-child,td:first-child{text-align:left}
     </div>
 
     <div class="card">
+      <h2>☁️ 跨设备同步 <span class="sub">GitHub 私有 Gist · 端到端加密</span></h2>
+      <div class="row">
+        <input type="password" id="syncPat" class="grow" placeholder="GitHub Token（classic，勾选 gist 权限）" autocomplete="off">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="syncGist" class="grow" placeholder="Gist ID（首次上传后自动填入）" autocomplete="off">
+        <button id="btnSyncPush" class="ghost">上传到云端</button>
+        <button id="btnSyncPull" class="ghost">从云端合并</button>
+      </div>
+      <p class="hintline" id="syncHint"></p>
+      <p class="foot">数据用上方「备份密码」AES-GCM 加密后存进你自己的私有 Gist，GitHub 只见密文；上传前会先与云端合并，不会互相覆盖。另一台设备填同一 Token、Gist ID 和密码，点「从云端合并」即可。Token 只存本机浏览器，不进入备份文件。获取 Token：github.com/settings/tokens → Generate new token (classic) → 勾选 gist。</p>
+    </div>
+
+    <div class="card">
       <h2>🩺 数据健康</h2>
       <div id="healthRows" class="empty-sm">—</div>
       <p class="foot">本机保存 + 浏览器数据库镜像 + 历史快照三层防丢；「持久化许可」授予后，浏览器不会因存储压力自动清理本站数据。</p>
     </div>
 
-    <p class="foot center">⚠️ 所有数值均为估算，仅供健康管理参考，不构成医疗建议；如有基础疾病请遵医嘱。<br>减脂热量记录器 v2.0.0 · 数据格式 v2 · 计算核心通过 19 项单元测试与合成数据回归</p>
+    <p class="foot center">⚠️ 所有数值均为估算，仅供健康管理参考，不构成医疗建议；如有基础疾病请遵医嘱。<br>减脂热量记录器 v2.1.0 · 数据格式 v2 · 计算核心通过 25 项单元测试与合成数据回归</p>
   </section>
 </main>
 
@@ -444,7 +458,7 @@ const LS_KEY='jzCalorieTracker.v1';
 const LS_BACKUP='jzCalorieTracker.backup';          // 同步双写快照：防主键写入中途损坏
 const LS_QUARANTINE='jzCalorieTracker.quarantine';  // 损坏数据隔离区
 const SCHEMA_VERSION=2;
-const APP_VERSION='2.0.0';
+const APP_VERSION='2.1.0';
 const MEALS=[['breakfast','🌅 早餐'],['lunch','☀️ 午餐'],['dinner','🌙 晚餐'],['snack','🍪 加餐']];
 // 食物库格式：[名称, 千卡, 蛋白质g, 脂肪g, 碳水g, 膳食纤维g, 钠mg]（每份估算值）
 const FOODS=[
@@ -622,7 +636,7 @@ let toastTimer=null;
 function toast(msg){const el=$('#toast');el.textContent=msg;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),1800);}
 
 /* ================= 计算（纯函数在 core.js，此处只做数据接线） ================= */
-const {KCAL_PER_KG,calcBmr,calcTdee,calcBudget,exKcal,stepsKcal,niceCeil,niceFloor,niceTicks}=CalCore;
+const {KCAL_PER_KG,calcBmr,calcTdee,calcBudget,exKcal,stepsKcal,niceCeil,niceFloor,niceTicks,mergeDB}=CalCore;
 function profileReady(){const p=db.profile;return +(p.weight)>0&&+(p.height)>0&&+(p.age)>0;}
 function tdee(){return profileReady()?calcTdee(db.profile):null;}
 function budget(){return profileReady()?calcBudget(db.profile):null;}
@@ -1268,6 +1282,82 @@ $('#btnClear').addEventListener('click',()=>{
   saveDB();render();renderHealth();updateExportHint();toast('已清空记录');
 });
 
+/* ---- 跨设备同步（GitHub 私有 Gist · 端到端加密） ---- */
+const SYNC_LS='jzCalorieTracker.sync'; // Token/GistId 只存本机浏览器，绝不进入备份文件
+function syncCfg(){try{return JSON.parse(localStorage.getItem(SYNC_LS))||{};}catch(e){return{};}}
+function saveSyncCfg(c){try{localStorage.setItem(SYNC_LS,JSON.stringify(c));}catch(e){}}
+function renderSyncHint(){
+  const el=$('#syncHint');if(!el)return;
+  const c=syncCfg();
+  el.textContent=c.gist
+    ?('云端已连接（Gist '+String(c.gist).slice(0,8)+'…）'+(db.lastSyncAt?' · 上次同步 '+new Date(db.lastSyncAt).toLocaleString():''))
+    :'尚未连接云端';
+}
+async function gistApi(cfg,method,body){
+  const r=await fetch('https://api.github.com/gists'+(cfg.gist?'/'+cfg.gist:''),{
+    method:method,
+    headers:{'Authorization':'Bearer '+cfg.pat,'Accept':'application/vnd.github+json'},
+    body:body?JSON.stringify(body):undefined
+  });
+  if(!r.ok){
+    if(r.status===401)throw new Error('Token 无效或已过期');
+    if(r.status===404)throw new Error('Gist 不存在（检查 Token 是否勾选了 gist 权限）');
+    if(r.status===403)throw new Error('请求被 GitHub 限制（稍后再试）');
+    throw new Error('GitHub 返回 '+r.status);
+  }
+  return r.json();
+}
+async function pullRemoteEncrypted(cfg,pwd){
+  const j=await gistApi(cfg,'GET');
+  const f=j.files&&j.files['ct-backup.json.enc'];
+  if(!f||!f.content)throw new Error('云端没有同步文件');
+  return readEncryptedBackup(f.content,pwd);
+}
+async function pushSync(){
+  const cfg=syncCfg();
+  if(!cfg.pat){toast('请先填 GitHub Token');return;}
+  const pwd=$('#encPwd').value;
+  if(pwd.length<6){toast('请先在上方「数据管理」设置备份密码（≥6位）');return;}
+  toast('正在同步…');
+  try{
+    let remote=null;
+    if(cfg.gist){
+      try{remote=await pullRemoteEncrypted(cfg,pwd);}
+      catch(e){if(String(e.message).indexOf('不存在')<0)throw e; cfg.gist='';} // gist 被删→重新创建
+    }
+    if(remote&&applyDB(mergeDB(db,remote))){saveDB();afterDataReplace();} // 先合并再上传，避免互相覆盖
+    const env=await makeEncryptedBackup(pwd);
+    const j=await gistApi(cfg,cfg.gist?'PATCH':'POST',{description:'减脂热量记录器加密同步',files:{'ct-backup.json.enc':{content:env}}});
+    cfg.gist=j.id;saveSyncCfg(cfg);$('#syncGist').value=j.id;
+    db.lastSyncAt=new Date().toISOString();logOp('sync',{dir:'push'});saveDB();renderHealth();renderSyncHint();
+    toast('已上传到云端 ✅');
+  }catch(e){toast('同步失败：'+e.message);}
+}
+async function pullSync(){
+  const cfg=syncCfg();
+  if(!cfg.pat){toast('请先填 GitHub Token');return;}
+  if(!cfg.gist){toast('还没有云端备份，先点「上传到云端」');return;}
+  const pwd=$('#encPwd').value;
+  if(pwd.length<6){toast('请先在上方「数据管理」设置备份密码（≥6位）');return;}
+  toast('正在合并…');
+  try{
+    const remote=await pullRemoteEncrypted(cfg,pwd);
+    const before={i:db.intakes.length,e:db.exercises.length,x:(db.extras||[]).length,w:db.weights.length};
+    const m=mergeDB(db,remote);
+    if(!applyDB(m)){toast('云端数据不完整，已取消');return;}
+    saveDB();afterDataReplace();
+    db.lastSyncAt=new Date().toISOString();logOp('sync',{dir:'pull'});saveDB();renderHealth();renderSyncHint();
+    toast('合并完成：新增 饮食 '+(db.intakes.length-before.i)+' · 运动 '+(db.exercises.length-before.e)+' · 零星 '+((db.extras||[]).length-before.x)+' · 体重 '+(db.weights.length-before.w));
+  }catch(e){
+    if(e&&e.name==='OperationError'||/decrypt|UTF-8/i.test(String(e&&e.message)))toast('解密失败：密码与云端加密时不一致');
+    else toast('同步失败：'+(e.message||e));
+  }
+}
+$('#syncPat').addEventListener('change',()=>{const c=syncCfg();c.pat=$('#syncPat').value.trim();saveSyncCfg(c);});
+$('#syncGist').addEventListener('change',()=>{const c=syncCfg();c.gist=$('#syncGist').value.trim();saveSyncCfg(c);});
+$('#btnSyncPush').addEventListener('click',pushSync);
+$('#btnSyncPull').addEventListener('click',pullSync);
+
 /* ---- 数据健康 ---- */
 function renderHealth(){
   const el=$('#healthRows');if(!el)return;
@@ -1276,6 +1366,7 @@ function renderHealth(){
     ['浏览器数据库镜像（IndexedDB）',idbOk==null?'待首次保存':(idbOk?'正常':'不可用'),idbOk!==false],
     ['持久化许可（防浏览器清理）',persistOk==null?'未申请':(persistOk?'已授予':'未授予'),!!persistOk],
     ['数据格式','v'+db.version+'（当前 v'+SCHEMA_VERSION+'）',db.version===SCHEMA_VERSION],
+    ['云端同步',syncCfg().gist?'已连接私有 Gist':'未配置',!!syncCfg().gist],
     ['记录量','饮食 '+db.intakes.length+' · 运动 '+db.exercises.length+' · 零星 '+(db.extras||[]).length+' · 体重 '+db.weights.length+' · 日志 '+(db.ops||[]).length,true],
     ['上次导出备份',db.lastExportAt?new Date(db.lastExportAt).toLocaleString():'从未导出',!!db.lastExportAt]
   ];
@@ -1330,6 +1421,7 @@ function renderHealth(){
     $('#backupBanner').hidden=true;
   });
   updateExportHint();renderHealth();
+  (function(){const c=syncCfg();if(c.pat)$('#syncPat').value=c.pat;if(c.gist)$('#syncGist').value=c.gist;renderSyncHint();})();
 
   /* ---- PWA：离线可用 + 可安装 + 更新提示 ---- */
   if('serviceWorker' in navigator&&(location.protocol==='https:'||location.hostname==='localhost'||location.hostname==='127.0.0.1')){
