@@ -1,6 +1,6 @@
 /* 减脂热量记录器 · Service Worker
    静态资源预缓存；页面导航网络优先（保证更新能到达），其余资源 stale-while-revalidate。 */
-const CACHE = 'jz-cal-v2.1.0';
+const CACHE = 'jz-cal-v2.2.0';
 const ASSETS = ['./', './index.html', './core.js', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', e => {
